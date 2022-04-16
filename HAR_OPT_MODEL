@@ -1,0 +1,144 @@
+import numpy as np
+import matplotlib
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+import keras_tuner
+import tensorflow as tf
+import keras 
+from sklearn import metrics
+from keras_tuner.tuners import RandomSearch,Hyperband
+from keras_tuner.engine.hyperparameters import HyperParameters
+from keras_tuner.tuners import RandomSearch
+from sklearn.preprocessing import LabelEncoder
+from sklearn.preprocessing import StandardScaler
+from tensorflow.keras.layers import Dense, Dropout
+from tensorflow.keras.optimizers import Adam
+
+activity_df = pd.read_csv("train.csv", low_memory=False)
+activity_df_test = pd.read_csv("test.csv", low_memory=False)
+print(activity_df.head())
+print(activity_df.shape)
+print(activity_df_test.shape)
+
+###Data Cleanup
+print(activity_df.nunique())
+#find unique values in each column
+counts = activity_df.nunique()
+to_del = [i for i,v in enumerate(counts) if v == 1]
+print(to_del)
+# drop irrelevant columns
+activity_df.drop(to_del, axis=1, inplace=True)
+print(activity_df.shape)
+dups = activity_df.duplicated()
+# report if there are any duplicates
+print(dups.any())
+# list all duplicate rows
+#print(activity_df[dups])
+#print(activity_df.shape)
+print(activity_df.isnull().sum())
+print(activity_df['subject'].unique())
+activity_df_1=pd.DataFrame(activity_df.drop(['subject'],axis=1))
+activity_df_test1=pd.DataFrame(activity_df_test.drop(['subject'],axis=1))
+
+##Data Pre-processing
+activity_df['Activity'].unique()
+len(activity_df)
+#See how data is distributed
+plt.figure(figsize=(12,6))
+axis=sns.countplot(x="Activity",data=activity_df)
+plt.xticks(x=activity_df_1['Activity'],rotation='vertical')
+plt.show()
+
+print('X Y values')
+y=activity_df_1.Activity.values.astype(object)
+#print(activity_df.nunique())
+x_train=activity_df_1.iloc[:,0:561]
+print(x_train.nunique())
+x_test = activity_df_test1.iloc[:,0:561]
+y_raw = activity_df_test1.Activity.values.astype(object)
+
+##Encode the Labels
+#This is required by scikit learn when performing supervised learning
+label_encoder=LabelEncoder()
+label_encoder.fit(y)
+y_train=label_encoder.transform(y)
+label_encoder1=LabelEncoder()
+label_encoder1.fit(y_raw)
+y_test = label_encoder1.transform(y_raw)
+classes=label_encoder.classes_
+print(classes)
+
+##Pre-processing - Scaling Data
+scaler=StandardScaler()
+x_train=scaler.fit_transform(x_train)
+x_test = scaler.fit_transform(x_test)
+
+##Developing Base Model
+model = tf.keras.Sequential()
+        
+model.add(Dense(64,kernel_initializer='normal',activation = 'sigmoid',input_dim=x_train.shape[1]))
+model.add(Dropout(0.2))
+          
+model.add(Dense(6,activation = 'softmax'))
+model.compile(optimizer=Adam(learning_rate=0.001),loss='sparse_categorical_crossentropy',metrics=['accuracy'])
+history=model.fit(x_train,y_train,  batch_size = 64, epochs=10,validation_data=(x_test,y_test),verbose=1)
+
+##Hyperparameter tuning
+def build_model_kt(hp):
+    model = keras.Sequential()
+    for i in range(hp.Int('num_layers', 2, 25)):
+        model.add(Dense(units = hp.Int('units' + str(i), min_value=32, max_value=512, step=32),
+                               kernel_initializer= hp.Choice('initializer', ['uniform', 'normal']),
+                               activation= hp.Choice('activation', ['relu', 'sigmoid', 'tanh'])))
+    model.add(Dense(6, kernel_initializer= hp.Choice('initializer', ['uniform', 'normal']), activation='softmax'))
+    model.add(
+            Dropout(0.2))
+    hp_learning_rate = hp.Choice('learning_rate', values=[1e-2, 1e-3, 1e-4])
+    model.compile(
+        optimizer = keras.optimizers.Adam(learning_rate=hp_learning_rate),
+        loss='sparse_categorical_crossentropy',
+        metrics=['accuracy'])
+    return model
+
+tuner = Hyperband(
+    build_model_kt,
+    objective='val_accuracy',
+    executions_per_trial=3,
+    directory='project_har', project_name = 'Human_activity_recognition')
+
+tuner.search_space_summary()
+
+stop_early = keras.callbacks.EarlyStopping(monitor='accuracy', patience=3)
+# Perform hypertuning
+tuner.search(x_train, y_train, epochs=10, validation_split=0.2, callbacks=[stop_early])
+
+tuner.results_summary()
+
+##Train with optimum/best hyperparameter obtained through hyperparameter tuning
+opt_hp=tuner.get_best_hyperparameters()[0]
+opt_model=tuner.get_best_models(num_models=1)[0]
+opt_fit = opt_model.fit(x_train,y_train, epochs=50, validation_data=(x_test,y_test))
+
+
+##Plot the output
+accuracy = opt_fit.history['accuracy']
+loss = opt_fit.history['loss']
+validation_loss = opt_fit.history['val_loss']
+validation_accuracy = opt_fit.history['val_accuracy']
+
+plt.figure(figsize=(15, 7))
+plt.subplot(2, 2, 1)
+plt.plot(range(15), accuracy[0:15], label='Training Accuracy')
+plt.plot(range(15), validation_accuracy[0:15], label='Validation Accuracy')
+plt.legend(loc='upper right')
+plt.title('Accuracy : Training Vs Validation ')
+
+plt.subplot(2, 2, 2)
+plt.plot(range(15), loss[0:15], label='Training Loss')
+plt.plot(range(15), validation_loss[0:15], label='Validation Loss')
+plt.title('Loss : Training Vs Validation ')
+plt.legend(loc='upper right')
+plt.show()
+
+
